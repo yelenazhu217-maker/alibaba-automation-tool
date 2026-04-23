@@ -2,102 +2,134 @@ import streamlit as st
 import pandas as pd
 import openai
 from io import BytesIO
-import requests
-from bs4 import BeautifulSoup
 import json
+import base64
+from PIL import Image
 
-# 1. UI 설정
-st.set_page_config(page_title="Alibaba Expert Automation", layout="wide")
-st.title("🚀 알리바바 상품 등록 최적화 도구 (v2.0)")
+# 1. 페이지 설정 및 제목
+st.set_page_config(page_title="Alibaba Bulk Upload Expert", layout="wide")
+st.title("📦 알리바바 상품 등록 자동화 (v2.1 - PIS 5.0 대응)")
 
-# 사이드바 설정
+# 2. 사이드바 - 설정 및 고정값 입력
 with st.sidebar:
-    st.header("⚙️ 설정")
+    st.header("⚙️ 시스템 설정")
     api_key = st.text_input("OpenAI API Key", type="password")
+    
     st.divider()
-    st.subheader("💰 가격 및 기본 정보")
-    min_price = st.number_input("Min Price (FOB)", value=10.0)
-    max_price = st.number_input("Max Price (FOB)", value=15.0)
-    currency = st.selectbox("Currency", ["USD", "KRW", "EUR"])
-    moq = st.number_input("MOQ (최소 주문 수량)", value=10)
-    origin = st.text_input("Place of Origin", value="South Korea")
-    brand = st.text_input("Brand Name", value="Custom/OEM")
+    st.header("💰 가격 및 기본 정보 (고정값)")
+    # 이 부분에 입력한 값이 엑셀에 자동으로 들어갑니다.
+    currency = st.selectbox("통화 (Currency)", ["USD", "KRW", "EUR"], index=0)
+    min_price = st.number_input("최소 가격 (Min Price)", value=10.0, step=0.1)
+    max_price = st.number_input("최대 가격 (Max Price)", value=15.0, step=0.1)
+    moq = st.number_input("최소 주문량 (MOQ)", value=10, step=1)
+    origin = st.text_input("원산지 (Place of Origin)", value="South Korea")
+    brand = st.text_input("브랜드 (Brand Name)", value="Custom/OEM")
+    
+    st.divider()
+    num_variants = st.slider("제품당 생성할 변형 버전 수", 1, 5, 3)
 
-# 2. 메인 입력 영역
-tab1, tab2 = st.tabs(["🔗 스마트스토어 링크 분석", "📸 이미지 스크린샷 분석"])
+# 3. 알리바바 엑셀 템플릿 컬럼 정의
+ALIBABA_COLUMNS = [
+    'Product title', 'Product image 1', 'Product image 2', 'Product image 3', 
+    'Product description', 'Place of origin', 'Brand name', 'Category',
+    'Price Unit', 'Min. Price', 'Max. Price', 'Min. Order Quantity',
+    'Product attribute name 1', 'Product attribute value 1',
+    'Product attribute name 2', 'Product attribute value 2',
+    'Product attribute name 3', 'Product attribute value 3',
+    'Product attribute name 4', 'Product attribute value 4'
+]
 
-raw_data = ""
+# 이미지 인코딩 함수
+def encode_image(image_file):
+    return base64.b64encode(image_file.getvalue()).decode('utf-8')
 
-with tab1:
-    url = st.text_input("스마트스토어 상품 링크를 입력하세요")
-    if url and st.button("링크 분석 시작"):
-        # 간단한 크롤링 로직 (실제 운영 시에는 더 정교한 스크래퍼 필요)
-        try:
-            res = requests.get(url)
-            soup = BeautifulSoup(res.text, 'html.parser')
-            title = soup.find('h3').text if soup.find('h3') else "상품명을 가져오지 못함"
-            raw_data = f"상품명: {title}\nURL: {url}"
-            st.success(f"데이터 수집 완료: {title}")
-        except:
-            st.error("링크를 읽어오지 못했습니다.")
+# 4. 메인 분석 로직
+uploaded_file = st.file_uploader("상품 스크린샷을 업로드하세요", type=['png', 'jpg', 'jpeg'])
 
-with tab2:
-    uploaded_file = st.file_uploader("상품 스크린샷 업로드", type=["png", "jpg", "jpeg"])
-
-# 3. AI 로직 및 엑셀 생성
-if st.button("알리바바 엑셀 생성 (PIS 5.0 최적화)"):
+if st.button("🚀 분석 및 엑셀 생성 시작"):
     if not api_key:
-        st.warning("API Key를 입력해주세요.")
+        st.error("API Key를 입력해주세요.")
+    elif not uploaded_file:
+        st.error("이미지를 업로드해주세요.")
     else:
         openai.api_key = api_key
-        with st.spinner("AI가 알리바바 최적화 데이터를 생성 중입니다..."):
+        
+        with st.spinner("AI가 상품을 분석하고 알리바바 규격으로 변환 중입니다..."):
+            base64_image = encode_image(uploaded_file)
             
-            # AI 프롬프트 (속성 매칭 강화)
+            # AI 프롬프트 - 엑셀 컬럼에 정확히 매칭되도록 JSON 구조 강제
             prompt = f"""
-            Analyze the following product data and generate 3 variations for Alibaba.com bulk upload.
-            Product Context: {raw_data}
+            You are an Alibaba.com SEO expert. Analyze this product image and generate {num_variants} variations.
+            The goal is a Product Information Score (PIS) of 5.0.
             
-            Return the result in JSON format with these fields:
-            - title: (SEO Optimized English title, max 128 chars)
-            - description: (Professional HTML description with benefits and specs)
-            - category: (Most relevant Alibaba category path)
-            - attributes: [{{ "name": "Material", "value": "..." }}, {{ "name": "Technics", "value": "..." }}, ...]
-            - keywords: (3-5 comma separated keywords)
+            Return ONLY a JSON list of objects. Each object MUST have these keys exactly:
+            - title: (SEO optimized English title, include keywords like Wholesale, Custom, OEM)
+            - category: (Appropriate Alibaba category path)
+            - description: (Detailed HTML description with features and specifications)
+            - attr_name1: "Material", attr_val1: (extract from image or infer)
+            - attr_name2: "Technics", attr_val2: (extract from image or infer)
+            - attr_name3: "Style", attr_val3: (extract from image or infer)
+            - attr_name4: "Feature", attr_val4: (extract from image or infer)
             """
-            
-            # AI 호출 (예시 구조)
-            # response = openai.ChatCompletion.create(...) 
-            
-            # 가상 데이터 생성 (테스트용)
-            data_list = []
-            for i in range(3):
-                row = {
-                    "Product title": f"Premium Custom T-shirt Variation {i+1} - OEM ODM Service",
-                    "Product image 1": "이미지 URL을 넣어주세요",
-                    "Product description": f"High quality product description for variation {i+1}",
-                    "Place of origin": origin,
-                    "Brand name": brand,
-                    "Category": "Apparel > T-shirts",
-                    "Price Unit": currency,
-                    "Min. Price": min_price,
-                    "Max. Price": max_price,
-                    "Min. Order Quantity": moq,
-                    "Product attribute name 1": "Material",
-                    "Product attribute value 1": "100% Cotton",
-                    "Product attribute name 2": "Technics",
-                    "Product attribute value 2": "Silk screen printing"
-                }
-                data_list.append(row)
 
-            # 4. 엑셀 다운로드
-            df = pd.DataFrame(data_list)
-            output = BytesIO()
-            with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-                df.to_excel(writer, index=False, sheet_name='Alibaba default template')
-            
-            st.download_button(
-                label="📥 최적화된 알리바바 엑셀 다운로드",
-                data=output.getvalue(),
-                file_name="alibaba_upload_ready.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            )
+            try:
+                response = openai.ChatCompletion.create(
+                    model="gpt-4o",
+                    messages=[
+                        {
+                            "role": "user",
+                            "content": [
+                                {"type": "text", "text": prompt},
+                                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}}
+                            ],
+                        }
+                    ],
+                    response_format={ "type": "json_object" }
+                )
+                
+                res_data = json.loads(response.choices[0].message.content)
+                # JSON 키가 리스트인지 확인 (GPT 응답 구조에 따라 대응)
+                items = res_data.get('variations', res_data.get('items', list(res_data.values())[0]))
+
+                # 5. 데이터프레임 구성 (사이드바 입력값 결합)
+                final_rows = []
+                for item in items:
+                    row = {
+                        'Product title': item.get('title'),
+                        'Product image 1': "https://your-image-url.com", # 실제 URL 처리 로직 필요 시 추가
+                        'Product description': item.get('description'),
+                        'Place of origin': origin,
+                        'Brand name': brand,
+                        'Category': item.get('category'),
+                        'Price Unit': currency,
+                        'Min. Price': min_price,
+                        'Max. Price': max_price,
+                        'Min. Order Quantity': moq,
+                        'Product attribute name 1': item.get('attr_name1'),
+                        'Product attribute value 1': item.get('attr_val1'),
+                        'Product attribute name 2': item.get('attr_name2'),
+                        'Product attribute value 2': item.get('attr_val2'),
+                        'Product attribute name 3': item.get('attr_name3'),
+                        'Product attribute value 3': item.get('attr_val3'),
+                        'Product attribute name 4': item.get('attr_name4'),
+                        'Product attribute value 4': item.get('attr_val4'),
+                    }
+                    final_rows.append(row)
+
+                # 6. 엑셀 파일 생성 및 다운로드
+                df = pd.DataFrame(final_rows, columns=ALIBABA_COLUMNS)
+                output = BytesIO()
+                with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+                    df.to_excel(writer, index=False, sheet_name='Alibaba Template')
+                
+                st.success("✅ 분석 완료! 아래 버튼을 눌러 엑셀을 다운로드하세요.")
+                st.download_button(
+                    label="📥 알리바바 업로드용 엑셀 다운로드",
+                    data=output.getvalue(),
+                    file_name="alibaba_bulk_upload.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                )
+                st.table(df[['Product title', 'Min. Price', 'Max. Price', 'Product attribute value 1']])
+
+            except Exception as e:
+                st.error(f"오류가 발생했습니다: {str(e)}")
